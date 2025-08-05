@@ -53,9 +53,13 @@ async def get_ip_from_url(url: str) -> Optional[str]:
         if ':' in domain:
             domain = domain.split(':')[0]
         
-        # 检查是否已经是IP地址，如果是则直接返回
-        ip_pattern = r'^\d+\.\d+\.\d+\.\d+$'
-        if re.match(ip_pattern, domain):
+        # 检查是否已经是IP地址（支持IPv4和IPv6）
+        # IPv4格式检查
+        ipv4_pattern = r'^\d+\.\d+\.\d+\.\d+$'
+        # IPv6格式检查（包括压缩格式）
+        ipv6_pattern = r'^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$|^(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$'
+        
+        if re.match(ipv4_pattern, domain) or re.match(ipv6_pattern, domain):
             if DEBUG_MODE:
                 logger.debug(f"检测到IP地址，跳过nslookup: {domain}")
             return domain
@@ -63,38 +67,58 @@ async def get_ip_from_url(url: str) -> Optional[str]:
         if DEBUG_MODE:
             logger.debug(f"开始nslookup查询域名: {domain}")
         
+        # 先尝试查询IPv6地址
+        process = await asyncio.create_subprocess_exec(
+            'nslookup', '-type=AAAA', domain,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        output = stdout.decode('utf-8', errors='ignore')
+        
+        # 解析IPv6地址
+        ipv6_addresses = []
+        for line in output.split('\n'):
+            if 'AAAA Address:' in line:
+                ipv6 = line.split('AAAA Address:')[-1].strip()
+                ipv6_addresses.append(ipv6)
+        
+        # 如果找到IPv6地址，返回第一个
+        if ipv6_addresses:
+            if DEBUG_MODE:
+                logger.debug(f"找到IPv6地址: {ipv6_addresses[0]}")
+            return ipv6_addresses[0]
+        
+        # 如果没有找到IPv6地址，尝试查询IPv4地址
         process = await asyncio.create_subprocess_exec(
             'nslookup', domain,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, _ = await process.communicate()
-        
-        # 解析nslookup输出
+        stdout, stderr = await process.communicate()
         output = stdout.decode('utf-8', errors='ignore')
-        # 查找IP地址模式
-        ip_pattern = r'Address: (\d+\.\d+\.\d+\.\d+)'
-        matches = re.findall(ip_pattern, output)
-        if matches:
-            if DEBUG_MODE:
-                logger.debug(f"nslookup查询成功，返回IP: {matches[-1]}")
-            return matches[-1]  # 返回最后一个IP地址
         
-        # 备用模式
-        ip_pattern2 = r'(\d+\.\d+\.\d+\.\d+)'
-        matches2 = re.findall(ip_pattern2, output)
-        for ip in matches2:
-            if not ip.startswith('127.') and ip != '0.0.0.0':
-                if DEBUG_MODE:
-                    logger.debug(f"nslookup备用模式查询成功，返回IP: {ip}")
-                return ip
-                
+        # 解析IPv4地址
+        addresses = []
+        for line in output.split('\n'):
+            if 'Address:' in line and not line.startswith('>'): 
+                ip = line.split('Address:')[-1].strip()
+                # 跳过DNS服务器地址
+                if not addresses or ip != addresses[0]:
+                    addresses.append(ip)
+        
+        if addresses:
+            if DEBUG_MODE:
+                logger.debug(f"找到IPv4地址: {addresses[-1]}")
+            return addresses[-1]
+        
         if DEBUG_MODE:
-            logger.debug(f"nslookup查询失败，未找到有效IP地址")
+            logger.warning(f"未能找到任何IP地址: {domain}")
         return None
+    
     except Exception as e:
         if DEBUG_MODE:
-            logger.error(f"nslookup查询异常: {str(e)}")
+            logger.error(f"获取IP地址时发生错误: {str(e)}")
         return None
 
 
@@ -236,9 +260,9 @@ async def get_connection_timing(url: str, resolved_ip: Optional[str] = None) -> 
         # 使用curl获取详细的时间信息
         cmd = [
             'curl',
-            '--location',
             '-o', 'NUL' if os.name == 'nt' else '/dev/null',
             '-s',
+            '--max-redirs', '0',  # 禁止自动重定向
             '-w', 'DNS Lookup Time: %{time_namelookup}s\nTCP Connect Time: %{time_connect}s\nTLS Handshake Time: %{time_appconnect}s\nServer Response Time: %{time_starttransfer}s\nTotal Time: %{time_total}s\n',
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             '-k'  # 忽略SSL证书验证错误
@@ -332,6 +356,12 @@ async def get_ssl_certificate_info(url: str, resolved_ip: Optional[str] = None) 
         connect_host = resolved_ip if resolved_ip else hostname
         if DEBUG_MODE and resolved_ip:
             logger.debug(f"SSL证书检测使用强制绑定IP: {resolved_ip}")
+            
+        # 对IPv6地址进行特殊处理
+        if ':' in connect_host and not connect_host.startswith('['):
+            connect_host = f'[{connect_host}]'
+            if DEBUG_MODE:
+                logger.debug(f"IPv6地址已添加方括号: {connect_host}")
         
         # 首先检查证书是否可信（不忽略验证）
         cmd_verify = [
@@ -342,6 +372,9 @@ async def get_ssl_certificate_info(url: str, resolved_ip: Optional[str] = None) 
             '-verify_return_error'
         ]
         
+        if DEBUG_MODE:
+            logger.debug(f"执行证书验证命令: {' '.join(cmd_verify)}")
+        
         verify_process = await asyncio.create_subprocess_exec(
             *cmd_verify,
             stdin=asyncio.subprocess.PIPE,
@@ -350,17 +383,31 @@ async def get_ssl_certificate_info(url: str, resolved_ip: Optional[str] = None) 
         )
         
         # 发送空输入并关闭stdin
-        verify_stdout, verify_stderr = await verify_process.communicate(input=b'')
+        verify_stdout, verify_stderr = await verify_process.communicate(input=b'Q\n')
         
         # 检查证书验证结果
+        verify_output = verify_stdout.decode('utf-8', errors='ignore')
+        verify_stderr_output = verify_stderr.decode('utf-8', errors='ignore')
+        
+        if DEBUG_MODE:
+            logger.debug(f"证书验证返回码: {verify_process.returncode}")
+            logger.debug(f"证书验证stdout: {verify_output[:200]}...")
+            if verify_stderr_output:
+                logger.debug(f"证书验证stderr: {verify_stderr_output}")
+        
         if verify_process.returncode == 0:
-            verify_output = verify_stdout.decode('utf-8', errors='ignore')
             if 'Verification: OK' in verify_output or 'Verify return code: 0' in verify_output:
                 cert_info['is_trusted'] = '可信'
+                if DEBUG_MODE:
+                    logger.debug("证书验证成功：可信")
             else:
                 cert_info['is_trusted'] = '不可信'
+                if DEBUG_MODE:
+                    logger.debug("证书验证成功但不可信")
         else:
             cert_info['is_trusted'] = '不可信'
+            if DEBUG_MODE:
+                logger.debug("证书验证失败：不可信")
         
         # 然后获取证书详细信息（忽略验证错误）
         cmd = [
@@ -371,6 +418,9 @@ async def get_ssl_certificate_info(url: str, resolved_ip: Optional[str] = None) 
             '-showcerts'
         ]
         
+        if DEBUG_MODE:
+            logger.debug(f"执行证书获取命令: {' '.join(cmd)}")
+        
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -379,93 +429,123 @@ async def get_ssl_certificate_info(url: str, resolved_ip: Optional[str] = None) 
         )
         
         # 发送空输入并关闭stdin
-        stdout, stderr = await process.communicate(input=b'')
+        stdout, stderr = await process.communicate(input=b'Q\n')
         
         # 即使返回码不为0，也尝试解析证书信息（因为可能是验证失败但连接成功）
         output = stdout.decode('utf-8', errors='ignore')
         stderr_output = stderr.decode('utf-8', errors='ignore')
         
+        if DEBUG_MODE:
+            logger.debug(f"证书获取返回码: {process.returncode}")
+            logger.debug(f"证书获取stdout: {output[:200]}...")
+            if stderr_output:
+                logger.debug(f"证书获取stderr: {stderr_output}")
+        
         # 合并stdout和stderr，因为openssl的输出可能在stderr中
         combined_output = output + stderr_output
         
         if combined_output:
-             # 提取证书部分
-             cert_start = combined_output.find('-----BEGIN CERTIFICATE-----')
-             cert_end = combined_output.find('-----END CERTIFICATE-----')
-             
-             if cert_start != -1 and cert_end != -1:
-                 cert_pem = combined_output[cert_start:cert_end + len('-----END CERTIFICATE-----')]
-                 
-                 # 使用openssl x509命令解析证书
-                 x509_cmd = [
-                     'openssl',
-                     'x509',
-                     '-noout',
-                     '-dates',
-                     '-issuer',
-                     '-subject',
-                     '-ext', 'subjectAltName'
-                 ]
-                 
-                 x509_process = await asyncio.create_subprocess_exec(
-                     *x509_cmd,
-                     stdin=asyncio.subprocess.PIPE,
-                     stdout=asyncio.subprocess.PIPE,
-                     stderr=asyncio.subprocess.PIPE
-                 )
-                 
-                 x509_stdout, _ = await x509_process.communicate(input=cert_pem.encode())
-                 
-                 if x509_process.returncode == 0:
-                     x509_output = x509_stdout.decode('utf-8', errors='ignore')
-                     
-                     # 解析证书信息
-                     for line in x509_output.split('\n'):
-                         if line.startswith('notBefore='):
-                             date_str = line.replace('notBefore=', '').strip()
-                             cert_info['valid_from'] = await format_cert_date(date_str)
-                         elif line.startswith('notAfter='):
-                             date_str = line.replace('notAfter=', '').strip()
-                             cert_info['valid_to'] = await format_cert_date(date_str)
-                         elif line.startswith('issuer='):
-                             issuer = line.replace('issuer=', '').strip()
-                             # 提取CN部分
-                             if 'CN=' in issuer:
-                                 cn_start = issuer.find('CN=')
-                                 cn_part = issuer[cn_start + 3:]
-                                 cn_end = cn_part.find(',')
-                                 if cn_end != -1:
-                                     cert_info['issuer'] = cn_part[:cn_end]
-                                 else:
-                                     cert_info['issuer'] = cn_part
-                             else:
-                                 cert_info['issuer'] = issuer
-                         elif line.startswith('subject='):
-                             subject = line.replace('subject=', '').strip()
-                             # 提取CN部分
-                             if 'CN=' in subject:
-                                 cn_start = subject.find('CN=')
-                                 cn_part = subject[cn_start + 3:]
-                                 cn_end = cn_part.find(',')
-                                 if cn_end != -1:
-                                     cert_info['subject'] = cn_part[:cn_end]
-                                 else:
-                                     cert_info['subject'] = cn_part
-                             else:
-                                 cert_info['subject'] = subject
-                         elif 'DNS:' in line:
-                             # 提取SAN域名
-                             dns_names = []
-                             parts = line.split(',')
-                             for part in parts:
-                                 if 'DNS:' in part:
-                                     dns_name = part.split('DNS:')[1].strip()
-                                     dns_names.append(dns_name)
-                             if dns_names:
-                                 cert_info['san_domains'] = ', '.join(dns_names)
+            # 提取证书部分
+            cert_start = combined_output.find('-----BEGIN CERTIFICATE-----')
+            cert_end = combined_output.find('-----END CERTIFICATE-----')
+            
+            if cert_start != -1 and cert_end != -1:
+                cert_pem = combined_output[cert_start:cert_end + len('-----END CERTIFICATE-----')]
+                
+                if DEBUG_MODE:
+                    logger.debug(f"成功提取证书PEM数据，长度: {len(cert_pem)}")
+                
+                # 使用openssl x509命令解析证书
+                x509_cmd = [
+                    'openssl',
+                    'x509',
+                    '-noout',
+                    '-dates',
+                    '-issuer',
+                    '-subject',
+                    '-ext', 'subjectAltName'
+                ]
+                
+                if DEBUG_MODE:
+                    logger.debug(f"执行证书解析命令: {' '.join(x509_cmd)}")
+                
+                x509_process = await asyncio.create_subprocess_exec(
+                    *x509_cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                x509_stdout, x509_stderr = await x509_process.communicate(input=cert_pem.encode())
+                
+                if DEBUG_MODE:
+                    logger.debug(f"证书解析返回码: {x509_process.returncode}")
+                
+                if x509_process.returncode == 0:
+                    x509_output = x509_stdout.decode('utf-8', errors='ignore')
+                    if DEBUG_MODE:
+                        logger.debug(f"证书解析输出: {x509_output}")
+                    
+                    # 解析证书信息
+                    for line in x509_output.split('\n'):
+                        if line.startswith('notBefore='):
+                            date_str = line.replace('notBefore=', '').strip()
+                            cert_info['valid_from'] = await format_cert_date(date_str)
+                        elif line.startswith('notAfter='):
+                            date_str = line.replace('notAfter=', '').strip()
+                            cert_info['valid_to'] = await format_cert_date(date_str)
+                        elif line.startswith('issuer='):
+                            issuer = line.replace('issuer=', '').strip()
+                            # 提取CN部分
+                            if 'CN=' in issuer:
+                                cn_start = issuer.find('CN=')
+                                cn_part = issuer[cn_start + 3:]
+                                cn_end = cn_part.find(',')
+                                if cn_end != -1:
+                                    cert_info['issuer'] = cn_part[:cn_end]
+                                else:
+                                    cert_info['issuer'] = cn_part
+                            else:
+                                cert_info['issuer'] = issuer
+                        elif line.startswith('subject='):
+                            subject = line.replace('subject=', '').strip()
+                            # 提取CN部分
+                            if 'CN=' in subject:
+                                cn_start = subject.find('CN=')
+                                cn_part = subject[cn_start + 3:]
+                                cn_end = cn_part.find(',')
+                                if cn_end != -1:
+                                    cert_info['subject'] = cn_part[:cn_end]
+                                else:
+                                    cert_info['subject'] = cn_part
+                            else:
+                                cert_info['subject'] = subject
+                        elif 'DNS:' in line:
+                            # 提取SAN域名
+                            dns_names = []
+                            parts = line.split(',')
+                            for part in parts:
+                                if 'DNS:' in part:
+                                    dns_name = part.split('DNS:')[1].strip()
+                                    dns_names.append(dns_name)
+                            if dns_names:
+                                cert_info['san_domains'] = ', '.join(dns_names)
+                else:
+                    if DEBUG_MODE:
+                        logger.debug(f"证书解析失败，stderr: {x509_stderr.decode('utf-8', errors='ignore')}")
+            else:
+                if DEBUG_MODE:
+                    logger.debug("未找到证书PEM数据")
+        else:
+            if DEBUG_MODE:
+                logger.debug("未获取到证书输出数据")
     
-    except Exception:
-        pass
+    except Exception as e:
+        if DEBUG_MODE:
+            logger.error(f"获取SSL证书信息时发生异常: {str(e)}")
+    
+    if DEBUG_MODE:
+        logger.debug(f"SSL证书信息获取完成: {cert_info}")
     
     return cert_info
 
@@ -498,6 +578,12 @@ async def detect_tls_versions(url: str, resolved_ip: Optional[str] = None) -> di
         
         # 如果有强制绑定的IP，使用该IP进行连接
         connect_host = resolved_ip if resolved_ip else hostname
+        
+        # 对IPv6地址进行特殊处理
+        if ':' in connect_host and not connect_host.startswith('['):
+            connect_host = f'[{connect_host}]'
+            if DEBUG_MODE:
+                logger.debug(f"IPv6地址已添加方括号: {connect_host}")
         
         # 定义TLS版本测试参数
         tls_tests = {
@@ -534,7 +620,7 @@ async def detect_tls_versions(url: str, resolved_ip: Optional[str] = None) -> di
                 # 发送空输入并设置超时
                 try:
                     stdout, stderr = await asyncio.wait_for(
-                        process.communicate(input=b''),
+                        process.communicate(input=b'Q\n'),
                         timeout=10.0
                     )
                     
@@ -628,10 +714,10 @@ async def detect_http_versions(url: str, resolved_ip: Optional[str] = None) -> d
         # 测试HTTP/1.1
         cmd_http1 = [
             'curl',
-            '--location',
             '-s',
             '-I',
             '--http1.1',
+            '--max-redirs', '0',  # 禁止自动重定向
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             '-k'  # 忽略SSL证书验证错误
         ] + resolve_params + [url]
@@ -651,10 +737,10 @@ async def detect_http_versions(url: str, resolved_ip: Optional[str] = None) -> d
         # 测试HTTP/2
         cmd_http2 = [
             'curl',
-            '--location',
             '-s',
             '-I',
             '--http2',
+            '--max-redirs', '0',  # 禁止自动重定向
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             '-k'  # 忽略SSL证书验证错误
         ] + resolve_params + [url]
@@ -674,10 +760,10 @@ async def detect_http_versions(url: str, resolved_ip: Optional[str] = None) -> d
         # 测试HTTP/3
         cmd_http3 = [
             'curl',
-            '--location',
             '-s',
             '-I',
             '--http3',
+            '--max-redirs', '0',  # 禁止自动重定向
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             '-k'  # 忽略SSL证书验证错误
         ] + resolve_params + [url]
@@ -722,10 +808,9 @@ async def _curl_request_internal(url: str, custom_ip: Optional[str] = None) -> d
         # 构建curl命令
         cmd = [
             'curl',
-            '--location',
             '-s',  # 静默模式
             '-I',  # 只获取头部信息
-            '-L',  # 跟随重定向
+            '--max-redirs', '0',  # 禁止自动重定向
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         ]
         
@@ -746,9 +831,9 @@ async def _curl_request_internal(url: str, custom_ip: Optional[str] = None) -> d
         # 修改curl命令为获取完整内容而非仅头部
         cmd_full = [
             'curl',
-            '--location',
             '-s',
             '-D', '-',  # 输出响应头到stdout
+            '--max-redirs', '0',  # 禁止自动重定向
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             '-k'  # 忽略SSL证书验证错误
         ]
@@ -904,9 +989,21 @@ def format_website_info(site_info: dict, custom_ip: Optional[str] = None) -> str
     """格式化网站信息为消息字符串"""
     response_parts = [
         f"状态码：{site_info['status_code']}",
-        f"网站：{site_info.get('original_url', 'N/A')}",
-        f"IP：{site_info['ip']}"
+        f"网站：{site_info.get('original_url', 'N/A')}"
     ]
+    
+    # 如果URL包含punycode编码，添加解码后的域名
+    original_url = site_info.get('original_url', '')
+    if 'xn--' in original_url.lower():
+        try:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(original_url)
+            decoded_domain = parsed_url.hostname.encode('utf-8').decode('idna')
+            response_parts.append(f"转码后：{decoded_domain}")
+        except Exception:
+            pass
+    
+    response_parts.append(f"IP：{site_info['ip']}")
     
     if custom_ip:
         response_parts.append(f"指定IP：{custom_ip}")
@@ -964,7 +1061,6 @@ def format_website_info(site_info: dict, custom_ip: Optional[str] = None) -> str
     if tls_versions.get('tls1.3'):
         supported_tls.append('TLS 1.3')
     
-    original_url = site_info.get('original_url', '')
     if original_url.startswith('https://'):
         if supported_tls:
             response_parts.append(f"TLS协议：{', '.join(supported_tls)}")
@@ -1061,6 +1157,14 @@ def parse_http_command(args_text: str) -> tuple[str, Optional[str]]:
         tuple: (url, custom_ip)
     """
     parts = args_text.strip().split()
+    
+    # 处理IPv6地址的特殊情况
+    if len(parts) >= 2:
+        # 检查第二个参数是否为IPv6地址
+        ipv6_pattern = r'^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$|^(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$'
+        if re.match(ipv6_pattern, parts[1]):
+            # 如果是IPv6地址，用方括号括起来
+            parts[1] = f'[{parts[1]}]'
     
     if len(parts) == 1:
         return parts[0], None

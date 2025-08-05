@@ -28,9 +28,10 @@ qlogo 或 qlogo QQ号   ##获取自己的或者指定QQ的头像和直链
 
 ###开发相关：
 
-http <url> <强制绑定IP（可选）>
+http <url> <强制绑定IP（可选）> 
 ping <IP或域名> 
 whois <IP或域名> 
+nslookup -type=A|AAAA|CNAME|MX|NS|PTR|SOA|SRV|TXT <域名>
 
 ###服务型功能（达到条件自动触发）：
 

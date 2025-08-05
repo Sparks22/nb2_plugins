@@ -1,0 +1,71 @@
+from nonebot import on_command
+from nonebot.adapters.onebot.v11 import Message, MessageEvent
+from nonebot.params import CommandArg
+import re
+import subprocess
+
+# 创建命令处理器
+nslookup = on_command('nslookup', aliases={'ns'}, priority=5, force_whitespace=True)
+
+# 安全的参数验证正则表达式
+SAFE_PARAM_PATTERN = re.compile(r'^[a-zA-Z0-9._-]+$')
+SAFE_TYPE_PATTERN = re.compile(r'^-type=|-query=(A|AAAA|CNAME|MX|NS|PTR|SOA|SRV|TXT)$', re.IGNORECASE)
+SAFE_SERVER_PATTERN = re.compile(r'^@[a-zA-Z0-9._-]+$')
+
+def is_safe_param(param: str) -> bool:
+    """验证参数是否安全"""
+    if not param:
+        return False
+    
+    # 检查是否是合法的类型参数
+    if param.startswith('-type=') or param.startswith('-query='):
+        return bool(SAFE_TYPE_PATTERN.match(param))
+    
+    # 检查是否是合法的DNS服务器参数
+    if param.startswith('@'):
+        return bool(SAFE_SERVER_PATTERN.match(param))
+    
+    # 检查是否是合法的域名或其他参数
+    return bool(SAFE_PARAM_PATTERN.match(param))
+
+@nslookup.handle()
+async def handle_nslookup(event: MessageEvent, args: Message = CommandArg()):
+    # 获取参数
+    arg_str = args.extract_plain_text().strip()
+    if not arg_str:
+        await nslookup.finish('请提供要查询的域名或IP地址')
+    
+    # 分割参数
+    params = arg_str.split()
+    
+    # 验证所有参数
+    if not all(is_safe_param(param) for param in params):
+        await nslookup.finish('包含不安全的参数，请检查输入')
+    
+    try:
+        # 执行nslookup命令
+        process = subprocess.Popen(
+            ['nslookup'] + params,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8'
+        )
+        
+        # 获取输出
+        stdout, stderr = process.communicate(timeout=10)
+        
+        # 如果有错误输出，优先显示错误
+        if stderr:
+            await nslookup.finish(f'执行出错：\n{stderr}')
+        
+        # 直接返回原始输出
+        if stdout:
+            await nslookup.finish(stdout)
+        else:
+            await nslookup.finish('未获取到查询结果')
+            
+    except subprocess.TimeoutExpired:
+        await nslookup.finish('查询超时')
+    except Exception as e:
+        return

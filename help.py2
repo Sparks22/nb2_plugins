@@ -4,7 +4,7 @@ from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, Event, MessageSegment, Message, GroupMessageEvent, PrivateMessageEvent
 
 # 定义命令处理器
-cmd_command = on_command('help')
+cmd_command = on_command('help', force_whitespace=True)
 
 # 获取当前文件所在的目录
 current_dir = os.path.dirname(os.path.abspath(__file__))

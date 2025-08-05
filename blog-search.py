@@ -6,15 +6,14 @@ from xml.etree import ElementTree as ET
 
 import httpx
 from nonebot import on_command
-from nonebot.adapters import Message
-from nonebot.adapters.onebot.v11 import MessageEvent
+from nonebot.adapters import Message, Event
 from nonebot.matcher import Matcher
 from nonebot.params import CommandArg
 from nonebot.log import logger
 
 # 插件元数据
 __plugin_name__ = "博客文章查询"
-__plugin_description__ = "查看afo.im博客文章列表，支持分页、搜索和详情查看"
+__plugin_description__ = "查看二叉树树的博客博客文章列表，支持分页、搜索和详情查看"
 __plugin_usage__ = """
 使用方法：
 /blog [页码] - 查看博客文章列表
@@ -28,8 +27,8 @@ __plugin_usage__ = """
 """
 
 # 配置常量
-RSS_URL = "https://www.afo.im/rss.xml"
-PAGE_SIZE = 50
+RSS_URL = "https://2x.nz/rss.xml"
+PAGE_SIZE = 100
 TIMEOUT = 10.0  # 10秒超时
 
 # 博客项数据结构
@@ -133,7 +132,7 @@ def parse_command_args(args_text: str) -> tuple[Optional[int], Optional[int], Op
     return page, index, search_keyword
 
 @cmd_blog.handle()
-async def handle_blog(matcher: Matcher, event: MessageEvent, args: Message = CommandArg()):
+async def handle_blog(matcher: Matcher, event: Event, args: Message = CommandArg()):
     """处理博客查询命令"""
     
     args_text = args.extract_plain_text().strip()
@@ -160,10 +159,10 @@ async def handle_blog(matcher: Matcher, event: MessageEvent, args: Message = Com
             ]
             
             if not search_results:
-                logger.info(f'搜索关键词 "{search_keyword}" 未找到匹配文章')
-                await matcher.finish(f'未找到包含 "{search_keyword}" 的文章。')
+                logger.info(f'搜索关键词未找到匹配文章')
+                await matcher.finish(f'未找到文章。')
             
-            msg = "afo.im 博文搜索结果：\n\n"
+            msg = "AcoFork Blog 搜索结果：\n\n"
             for i, item in enumerate(search_results):
                 msg += f"{i + 1}. {item.title}\n{item.link}\n"
                 if item.description:
@@ -196,7 +195,7 @@ async def handle_blog(matcher: Matcher, event: MessageEvent, args: Message = Com
             current_page_blogs = blogs[start:end]
             
             # 构建消息
-            msg = f"博客：https://afo.im\n博客文章 (第 {page}/{total_pages} 页)\n\n"
+            msg = f"博客：https://二叉树树的博客\n博客文章 (第 {page}/{total_pages} 页)\n\n"
             for i, item in enumerate(current_page_blogs):
                 index_num = start + i + 1
                 msg += f"{index_num}. {item.title}\n"
