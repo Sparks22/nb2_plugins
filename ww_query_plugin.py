@@ -3,7 +3,23 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.rule import to_me
 from nonebot.typing import T_State
 import json
-from wwSrcoe import send_kuro_request
+import sys
+from pathlib import Path
+
+# 添加当前文件所在目录到 sys.path，确保能找到同级模块
+current_dir = Path(__file__).parent
+if str(current_dir) not in sys.path:
+    sys.path.append(str(current_dir))
+
+try:
+    from wwSrcoe import send_kuro_request
+except ImportError:
+    # 如果作为包导入失败，尝试相对导入
+    try:
+        from .wwSrcoe import send_kuro_request
+    except ImportError:
+        # 最后尝试全路径（假设在 src.plugins 下）
+        from src.plugins.wwSrcoe import send_kuro_request
 
 # 定义常量
 API_URL = "https://api.kurobbs.com/user/role/findUserDefaultRole"
