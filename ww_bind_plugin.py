@@ -3,6 +3,7 @@ from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.rule import to_me
 import sys
 from pathlib import Path
+from nonebot.log import logger
 
 # 确保能找到同级模块
 current_dir = Path(__file__).parent
@@ -86,4 +87,4 @@ async def handle_bind(bot: Bot, event: GroupMessageEvent):
         await ww_bind_plugin.finish(MessageSegment.at(user_id) + f"\n✅ {action}成功！\nQQ: {user_id}\nUID: {game_uid}")
         
     except Exception as e:
-        await ww_bind_plugin.finish(f"绑定失败，数据库错误: {str(e)}")
+        logger.info(f"绑定失败，数据库错误: {str(e)}")
