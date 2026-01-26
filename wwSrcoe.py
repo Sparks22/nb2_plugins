@@ -1,4 +1,32 @@
 import httpx
+import logging
+
+try:
+    from nonebot.log import logger as nb_logger
+except Exception:
+    nb_logger = None
+
+_logger = nb_logger or logging.getLogger("wwSrcoe")
+
+def _redact_token(value: str | None) -> str | None:
+    if not value:
+        return value
+    if len(value) <= 12:
+        return "******"
+    return f"{value[:6]}...{value[-6:]}"
+
+def _safe_headers(headers: dict) -> dict:
+    safe = dict(headers)
+    if "token" in safe:
+        safe["token"] = _redact_token(safe.get("token"))
+    return safe
+
+def _truncate(text: str, limit: int = 2000) -> str:
+    if text is None:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"...(truncated,{len(text)} chars)"
 
 # 默认请求头配置
 # 这些配置保留了原始文件中的硬编码值，作为默认请求头
@@ -43,7 +71,10 @@ async def send_kuro_request(url: str, method: str, token: str, data: dict) -> ht
         headers["token"] = token
         
     async with httpx.AsyncClient() as client:
+        _logger.info(f"[kuro] request method={method.upper()} url={url} headers={_safe_headers(headers)} data={data}")
         if method.upper() == "POST":
-            return await client.post(url, headers=headers, data=data, timeout=10)
+            resp = await client.post(url, headers=headers, data=data, timeout=10)
         else:
-            return await client.get(url, headers=headers, params=data, timeout=10)
+            resp = await client.get(url, headers=headers, params=data, timeout=10)
+        _logger.info(f"[kuro] response status={resp.status_code} url={url} text={_truncate(resp.text)}")
+        return resp
