@@ -98,15 +98,13 @@ async def handle_request(bot: Bot, event: MessageEvent):
         role_id_num = int(str(role_row.get("role_id")).strip())
         server_id_num = int(str(role_row.get("server_id")).strip())
     except Exception:
-        await ww_card_plugin.finish(f"查询失败：数据库中的 roleId/serverId 不是数字（roleId={role_row.get('role_id')}, serverId={role_row.get('server_id')}），请先用“ww查看”重新同步")
+        await ww_card_plugin.finish(
+            f"查询失败：数据库中的 roleId/serverId 不是数字（roleId={role_row.get('role_id')}, serverId={role_row.get('server_id')}），请先用“ww查看”重新同步"
+        )
         return
 
     # 构造请求数据
-    api_data = {
-        "gameId": game_id,
-        "roleId": role_id_num,
-        "serverId": server_id_num,
-    }
+    api_data = f"gameId={game_id}&roleId={role_id_num}&serverId={server_id_num}"
 
     try:
         # 调用封装好的工具方法

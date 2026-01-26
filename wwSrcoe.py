@@ -57,7 +57,7 @@ DEFAULT_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
-async def send_kuro_request(url: str, method: str, token: str, data: dict) -> httpx.Response:
+async def send_kuro_request(url: str, method: str, token: str, data) -> httpx.Response:
     """
     封装接口调用
     :param url: 请求的 URL
