@@ -94,10 +94,8 @@ async def handle_request(bot: Bot, event: MessageEvent):
         await ww_card_plugin.finish("未找到您的鸣潮角色信息，请先使用“ww查看”同步角色数据后再试")
         return
 
-
-
     # 构造请求数据
-    api_data = f"gameId={game_id}&roleId={role_id_num}&serverId={server_id_num}"
+    api_data = f"gameId={game_id}&roleId={role_row.get('role_id')}&serverId={role_row.get('server_id')}"
 
     try:
         # 调用封装好的工具方法
