@@ -95,7 +95,11 @@ async def handle_request(bot: Bot, event: MessageEvent):
         return
 
     # 构造请求数据
-    api_data = f"gameId={game_id}&roleId={role_row.get('role_id')}&serverId={role_row.get('server_id')}"
+    api_data = {
+        "gameId": int(game_id),
+        "roleId": int(str(role_row.get("role_id")).strip()),
+        "serverId": role_row.get("server_id"),
+    }
 
     try:
         # 调用封装好的工具方法
