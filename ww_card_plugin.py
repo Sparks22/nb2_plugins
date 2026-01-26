@@ -63,70 +63,118 @@ async def handle_request(bot: Bot, event: GroupMessageEvent):
             return
 
         # 解析并格式化结果
-        result_msg = parse_card_data(data, game_name)
+        img_bytes = generate_card_image(data, game_name)
         
-        # 回复用户
-        await ww_card_plugin.finish(MessageSegment.at(event.user_id) + result_msg)
+        if img_bytes:
+             # 回复图片
+             await ww_card_plugin.finish(MessageSegment.at(event.user_id) + MessageSegment.image(img_bytes))
+        else:
+             await ww_card_plugin.finish(f"未找到相关 {game_name} 角色信息或生成图片失败")
             
     except Exception as e:
         # await ww_card_plugin.finish(f"请求发生错误: {str(e)}")
         pass
 
-def parse_card_data(data: dict, game_name: str) -> str:
+import io
+from PIL import Image, ImageDraw, ImageFont
+
+def generate_card_image(data: dict, game_name: str) -> bytes:
     """
-    将 API 返回的 JSON 数据解析为用户可读的文本
+    生成角色卡片图片
+    :return: 图片的 bytes 数据
     """
     if not data.get("success"):
-        msg = data.get("msg", "未知错误")
-        return f"\n查询 {game_name} 卡片失败: {msg}"
+        return None
     
-    # 真实数据结构：data 是一个列表，直接包含角色信息
     role_list = data.get("data", [])
-    
-    if not role_list:
-        return f"\n查询 {game_name} 卡片成功，但未找到绑定的角色信息"
-
-    # 根据当前查询的游戏名称筛选结果（API 似乎返回所有游戏的卡片，需要前端过滤）
     target_game_id = 3 if game_name == "鸣潮" else 2
     filtered_list = [r for r in role_list if r.get("gameId") == target_game_id]
     
     if not filtered_list:
-        return f"\n未找到您的 {game_name} 角色信息"
+        return None
 
-    result = [f"\n====== {game_name} 角色卡片 ======"]
+    # 图片配置
+    width = 600
+    # 根据角色数量动态计算高度，每个角色大约占用 250px，加上头部和底部
+    card_height = 280
+    height = 100 + (len(filtered_list) * card_height)
+    
+    # 背景颜色 (淡色背景)
+    bg_color = (240, 248, 255) if game_name == "鸣潮" else (40, 40, 45) # 鸣潮偏亮，战双偏暗
+    text_color = (0, 0, 0) if game_name == "鸣潮" else (255, 255, 255)
+    accent_color = (0, 191, 255) if game_name == "鸣潮" else (220, 20, 60) # 鸣潮蓝，战双红
+    
+    img = Image.new('RGB', (width, height), bg_color)
+    draw = ImageDraw.Draw(img)
+    
+    # 尝试加载中文字体，如果失败则使用默认
+    try:
+        # 尝试 Windows 常见中文字体
+        font_title = ImageFont.truetype("msyhbd.ttc", 36)
+        font_content = ImageFont.truetype("msyh.ttc", 24)
+        font_small = ImageFont.truetype("msyh.ttc", 20)
+    except:
+        try:
+             # 尝试 Linux 常见字体
+            font_title = ImageFont.truetype("NotoSansCJK-Bold.ttc", 36)
+            font_content = ImageFont.truetype("NotoSansCJK-Regular.ttc", 24)
+            font_small = ImageFont.truetype("NotoSansCJK-Regular.ttc", 20)
+        except:
+            # 降级
+            font_title = ImageFont.load_default()
+            font_content = ImageFont.load_default()
+            font_small = ImageFont.load_default()
+
+    # 绘制标题
+    title = f"{game_name} 角色卡片"
+    # 获取文本宽高 (兼容旧版 Pillow)
+    bbox = draw.textbbox((0, 0), title, font=font_title)
+    text_w = bbox[2] - bbox[0]
+    draw.text(((width - text_w) / 2, 30), title, font=font_title, fill=text_color)
+    
+    y_offset = 100
     
     for role in filtered_list:
-        # 提取字段
+        # 绘制单个角色卡片背景
+        # draw.rectangle([20, y_offset, width-20, y_offset + card_height - 20], outline=accent_color, width=2)
+        
+        # 角色名
         role_name = role.get("roleName", "未知")
+        draw.text((40, y_offset), f"角色: {role_name}", font=font_content, fill=text_color)
+        
+        # 等级 (画在右侧)
+        level = role.get("gameLevel", "??")
+        draw.text((width - 150, y_offset), f"Lv.{level}", font=font_content, fill=accent_color)
+        
+        y_cursor = y_offset + 40
+        
+        # 详细信息
         role_id = role.get("roleId", "未知")
         server_name = role.get("serverName", "未知")
-        level = role.get("gameLevel", "??")
         
-        # 基础信息
-        role_desc = (
-            f"👤 角色: {role_name}\n"
-            f"🆔 UID: {role_id}\n"
-            f"🌏 服务器: {server_name}\n"
-            f"📊 等级: {level}"
-        )
+        draw.text((40, y_cursor), f"UID: {role_id}", font=font_small, fill=text_color)
+        draw.text((300, y_cursor), f"服务器: {server_name}", font=font_small, fill=text_color)
+        y_cursor += 35
         
-        # 战双特有 (gameId=2)
-        if role.get("gameId") == 2:
-            role_desc += f"\n👗 涂装收集率: {role.get('fashionCollectionPercent', 0)*100:.1f}%"
-            role_desc += f"\n⚔️ 战力评分: {role.get('roleScore', '暂无')}"
-        
-        # 鸣潮特有 (gameId=3)
-        if role.get("gameId") == 3:
-            role_desc += f"\n🏆 成就数: {role.get('achievementCount', 0)}"
-            role_desc += f"\n👻 声骸收集率: {role.get('phantomPercent', 0)*100:.1f}%"
+        # 特有数据
+        if game_name == "战双帕弥什":
+            fashion = role.get('fashionCollectionPercent', 0) * 100
+            score = role.get('roleScore', '暂无')
+            draw.text((40, y_cursor), f"涂装收集: {fashion:.1f}%", font=font_small, fill=text_color)
+            draw.text((300, y_cursor), f"战力评分: {score}", font=font_small, fill=text_color)
+            
+        elif game_name == "鸣潮":
+            achieve = role.get('achievementCount', 0)
+            phantom = role.get('phantomPercent', 0) * 100
+            draw.text((40, y_cursor), f"成就数: {achieve}", font=font_small, fill=text_color)
+            draw.text((300, y_cursor), f"声骸收集: {phantom:.1f}%", font=font_small, fill=text_color)
+            
+        # 分割线
+        y_offset += card_height
+        draw.line([40, y_offset - 20, width - 40, y_offset - 20], fill=accent_color, width=1)
 
-        result.append(role_desc)
-        result.append("-" * 20)
-    
-    # 移除最后一个分隔符
-    if len(result) > 1:
-        result.pop()
-        
-    result.append("==========================")
-    
-    return "\n".join(result)
+    # 转换为 bytes
+    img_byte_arr = io.BytesIO()
+    img.save(img_byte_arr, format='PNG')
+    return img_byte_arr.getvalue()
+
