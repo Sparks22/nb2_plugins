@@ -49,12 +49,13 @@ ww_card_plugin = on_message(rule=to_me() & check_rule, priority=10, block=True)
 
 @ww_card_plugin.handle()
 async def handle_request(bot: Bot, event: GroupMessageEvent):
-    # 检查用户是否已绑定
+    # 强制检查绑定：无论任何情况，都先检查当前用户是否已绑定
     user_id = event.user_id
     row = await db.fetch_one("SELECT game_uid FROM user_bind WHERE user_id = ?", (user_id,))
     
+    # 如果未绑定，直接拦截并提示
     if not row:
-        await ww_card_plugin.finish("您尚未绑定游戏UID，无法查询卡片。\n请发送 '绑定+UID' 进行绑定，例如：绑定100123456")
+        await ww_card_plugin.finish("您尚未绑定游戏UID，无法查询卡片。\n请先发送 '绑定+UID' 进行绑定，例如：绑定100123456")
         return
 
     # 解析消息内容，确定 gameId

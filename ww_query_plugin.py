@@ -50,23 +50,29 @@ ww_query_plugin = on_message(rule=to_me() & check_rule, priority=10, block=True)
 
 @ww_query_plugin.handle()
 async def handle_request(bot: Bot, event: GroupMessageEvent, state: T_State):
+    # 强制检查绑定：无论是否输入了 ID，都先检查当前用户是否已绑定
+    user_id = event.user_id
+    row = await db.fetch_one("SELECT game_uid FROM user_bind WHERE user_id = ?", (user_id,))
+    
+    # 如果未绑定，直接拦截并提示
+    if not row:
+        await ww_query_plugin.finish("您尚未绑定游戏UID，无法使用此功能。\n请先发送 '绑定+UID' 进行绑定，例如：绑定100123456")
+        return
+
     # 解析消息内容，提取 queryUserId
     msg = event.get_plaintext().strip()
-    # 如果用户直接输入 "查看"，则尝试从数据库获取绑定的 UID
+    
+    # 如果消息只是 "查看"，则使用绑定的 UID
     if msg == "查看":
-        user_id = event.user_id
-        row = await db.fetch_one("SELECT game_uid FROM user_bind WHERE user_id = ?", (user_id,))
-        if not row:
-            await ww_query_plugin.finish("您尚未绑定游戏UID，请先发送 '绑定+UID' 进行绑定，例如：绑定100123456")
-            return
         query_user_id = row['game_uid']
     else:
-        # 否则尝试从消息中提取 ID (保持原有逻辑，允许查询他人)
+        # 如果消息是 "查看123"，提取后面的 ID
         query_user_id = msg.replace("查看", "").strip()
     
     if not query_user_id:
-        await ww_query_plugin.finish("请在“查看”后面附带要查询的用户ID，或先绑定UID后直接发送“查看”")
-        return
+        # 这里理论上不会执行到，因为如果是 "查看" 已经被上面处理了，如果是 "查看" 后面有空格也会被 strip 掉
+        # 但为了保险，还是保留这个判断
+        query_user_id = row['game_uid']
 
     # 构造请求数据
     api_data = {
