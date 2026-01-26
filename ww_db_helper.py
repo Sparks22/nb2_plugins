@@ -17,8 +17,14 @@ class DBHelper:
     def __init__(self, db_name="my_plugin_data.db"):
         # 获取插件数据目录
         # 这里使用 "ww_plugin" 作为插件名，localstore 会自动分配路径
-        # 通常路径为: data/ww_plugin/
-        self.data_dir = store.get_plugin_data_dir("ww_plugin")
+        # 修正：get_plugin_data_dir() 不需要参数，它会自动根据插件名获取路径
+        # 如果是在脚本中直接运行，没有插件上下文，可能需要使用 get_data_dir("ww_plugin")
+        try:
+            self.data_dir = store.get_plugin_data_dir()
+        except Exception:
+            # 如果自动获取失败（例如不是作为插件加载），则手动指定
+            self.data_dir = store.get_data_dir("ww_plugin")
+            
         self.db_path = self.data_dir / db_name
         self._init_db()
 
