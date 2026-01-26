@@ -8,23 +8,30 @@ from nonebot.utils import run_sync
 require("nonebot_plugin_localstore")
 import nonebot_plugin_localstore as store
 
-# 添加当前目录到 sys.path，方便导入
-current_dir = Path(__file__).parent
-if str(current_dir) not in sys.path:
-    sys.path.append(str(current_dir))
+if __name__ != "ww_db_helper":
+    sys.modules.setdefault("ww_db_helper", sys.modules[__name__])
+
+def _get_project_root() -> Path:
+    p = Path(__file__).resolve()
+    if p.parent.name == "plugins" and p.parent.parent.name == "src":
+        return p.parent.parent.parent
+    return p.parent
+
+def _get_stable_data_dir() -> Path:
+    project_root = _get_project_root()
+    try:
+        data_dir = store.get_data_dir("ww_plugin")
+    except Exception:
+        data_dir = store.get_plugin_data_dir()
+
+    data_dir = Path(data_dir)
+    if not data_dir.is_absolute():
+        data_dir = (project_root / data_dir).resolve()
+    return data_dir
 
 class DBHelper:
     def __init__(self, db_name="my_plugin_data.db"):
-        # 获取插件数据目录
-        # 这里使用 "ww_plugin" 作为插件名，localstore 会自动分配路径
-        # 修正：get_plugin_data_dir() 不需要参数，它会自动根据插件名获取路径
-        # 如果是在脚本中直接运行，没有插件上下文，可能需要使用 get_data_dir("ww_plugin")
-        try:
-            self.data_dir = store.get_plugin_data_dir()
-        except Exception:
-            # 如果自动获取失败（例如不是作为插件加载），则手动指定
-            self.data_dir = store.get_data_dir("ww_plugin")
-            
+        self.data_dir = _get_stable_data_dir()
         self.db_path = self.data_dir / db_name
         self._init_db()
 
