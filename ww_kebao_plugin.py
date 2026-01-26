@@ -69,7 +69,7 @@ else:
             await ww_kebao_plugin.finish(MessageSegment.at(event.user_id) + MessageSegment.image(img))
         except Exception as e:
             logger.info(f"ww珂宝请求失败: {e}")
-            await ww_kebao_plugin.finish("获取图片失败：请求异常")
+            # await ww_kebao_plugin.finish("获取图片失败：请求异常")
 
 
 if __name__ == "__main__":
