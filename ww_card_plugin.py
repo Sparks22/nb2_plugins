@@ -5,7 +5,6 @@ from nonebot.log import logger
 import json
 import sys
 from pathlib import Path
-from urllib.parse import urlencode
 
 # 添加当前文件所在目录到 sys.path，确保能找到同级模块
 current_dir = Path(__file__).parent
@@ -95,18 +94,15 @@ async def handle_request(bot: Bot, event: MessageEvent):
         await ww_card_plugin.finish("未找到您的鸣潮角色信息，请先使用“ww查看”同步角色数据后再试")
         return
 
-    query = urlencode(
-        {
-            "gameId": game_id,
-            "roleId": role_row.get("role_id"),
-            "serverId": role_row.get("server_id"),
-        }
-    )
-    url = f"{API_URL}?{query}"
+    api_data = {
+        "gameId": game_id,
+        "roleId": role_row.get("role_id"),
+        "serverId": role_row.get("server_id"),
+    }
 
     try:
         # 调用封装好的工具方法
-        resp = await send_kuro_request(url, METHOD, TOKEN, {})
+        resp = await send_kuro_request(API_URL, METHOD, TOKEN, api_data)
         
         # 尝试解析 JSON
         try:
