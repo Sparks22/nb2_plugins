@@ -94,11 +94,18 @@ async def handle_request(bot: Bot, event: MessageEvent):
         await ww_card_plugin.finish("未找到您的鸣潮角色信息，请先使用“ww查看”同步角色数据后再试")
         return
 
+    try:
+        role_id_num = int(str(role_row.get("role_id")).strip())
+        server_id_num = int(str(role_row.get("server_id")).strip())
+    except Exception:
+        await ww_card_plugin.finish(f"查询失败：数据库中的 roleId/serverId 不是数字（roleId={role_row.get('role_id')}, serverId={role_row.get('server_id')}），请先用“ww查看”重新同步")
+        return
+
     # 构造请求数据
     api_data = {
         "gameId": game_id,
-        "roleId": role_row.get("role_id"),
-        "serverId": role_row.get("server_id"),
+        "roleId": role_id_num,
+        "serverId": server_id_num,
     }
 
     try:
@@ -108,7 +115,6 @@ async def handle_request(bot: Bot, event: MessageEvent):
         # 尝试解析 JSON
         try:
             outer = resp.json()
-            logger.info(f"请求发生错误: {str(outer)}")
         except json.JSONDecodeError:
             await ww_card_plugin.finish(f"查询失败：返回数据不是有效的 JSON\n{resp.text}")
             return
