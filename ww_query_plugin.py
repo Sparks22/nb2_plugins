@@ -21,6 +21,15 @@ except ImportError:
         # 最后尝试全路径（假设在 src.plugins 下）
         from src.plugins.wwSrcoe import send_kuro_request
 
+# 导入数据库 helper
+try:
+    from ww_db_helper import db
+except ImportError:
+    try:
+        from .ww_db_helper import db
+    except ImportError:
+        from src.plugins.ww_db_helper import db
+
 # 定义常量
 API_URL = "https://api.kurobbs.com/user/role/findUserDefaultRole"
 TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJjcmVhdGVkIjoxNzY4NjQ1NjcxNDkxLCJ1c2VySWQiOjIwOTEwNTM1fQ.YD3jbfC02hNPzbrprnPiu1vgKB02eesWbRAChHk6Q64"
@@ -33,7 +42,8 @@ async def check_rule(event: GroupMessageEvent) -> bool:
     2. 消息内容以 "查看" 开头
     """
     msg = event.get_plaintext().strip()
-    return msg.startswith("查看") and len(msg) > 2
+    # 支持纯 "查看" 指令
+    return msg.startswith("查看")
 
 # 注册消息响应器
 ww_query_plugin = on_message(rule=to_me() & check_rule, priority=10, block=True)
@@ -42,10 +52,20 @@ ww_query_plugin = on_message(rule=to_me() & check_rule, priority=10, block=True)
 async def handle_request(bot: Bot, event: GroupMessageEvent, state: T_State):
     # 解析消息内容，提取 queryUserId
     msg = event.get_plaintext().strip()
-    query_user_id = msg.replace("查看", "").strip()
+    # 如果用户直接输入 "查看"，则尝试从数据库获取绑定的 UID
+    if msg == "查看":
+        user_id = event.user_id
+        row = await db.fetch_one("SELECT game_uid FROM user_bind WHERE user_id = ?", (user_id,))
+        if not row:
+            await ww_query_plugin.finish("您尚未绑定游戏UID，请先发送 '绑定+UID' 进行绑定，例如：绑定100123456")
+            return
+        query_user_id = row['game_uid']
+    else:
+        # 否则尝试从消息中提取 ID (保持原有逻辑，允许查询他人)
+        query_user_id = msg.replace("查看", "").strip()
     
     if not query_user_id:
-        await ww_query_plugin.finish("请在“查看”后面附带要查询的用户ID")
+        await ww_query_plugin.finish("请在“查看”后面附带要查询的用户ID，或先绑定UID后直接发送“查看”")
         return
 
     # 构造请求数据

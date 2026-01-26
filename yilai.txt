@@ -13,6 +13,7 @@ distro
 setuptools
 wmi
 gputil
+Pillow
 
 selenium
 # webdriver-manager
