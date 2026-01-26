@@ -108,6 +108,7 @@ async def handle_request(bot: Bot, event: MessageEvent):
         # 尝试解析 JSON
         try:
             outer = resp.json()
+            logger.info(f"请求发生错误: {str(outer)}")
         except json.JSONDecodeError:
             await ww_card_plugin.finish(f"查询失败：返回数据不是有效的 JSON\n{resp.text}")
             return
