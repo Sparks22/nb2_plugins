@@ -153,13 +153,40 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
             await page.wait_for_load_state("networkidle", timeout=60000)
             await page.wait_for_function("document.body && document.body.innerText && document.body.innerText.length > 80", timeout=60000)
             try:
-                login_btn = page.locator("text=立即登录").first
-                await login_btn.wait_for(state="visible", timeout=2000)
-                await login_btn.hover(timeout=1500)
-                await page.wait_for_timeout(1000)
-                vp = page.viewport_size or {"width": 1365, "height": 900}
-                await page.mouse.move(int(vp["width"] * 0.2), int(vp["height"] * 0.9))
-                await page.wait_for_timeout(2000)
+                await page.evaluate(
+                    """
+                    () => {
+                      const hide = (el) => {
+                        if (!el) return;
+                        if (el.style) el.style.setProperty("display", "none", "important");
+                        el.setAttribute("data-ww-hidden", "1");
+                      };
+                      const rm = (el) => {
+                        if (!el) return;
+                        try { el.remove(); } catch { hide(el); }
+                      };
+                      const panels = Array.from(document.querySelectorAll(".login-panel-popover"));
+                      for (const p of panels) {
+                        let cur = p;
+                        for (let i = 0; i < 6 && cur; i++) {
+                          if (cur.classList && cur.classList.contains("v-popover")) {
+                            rm(cur);
+                            break;
+                          }
+                          cur = cur.parentElement;
+                        }
+                        rm(p);
+                      }
+                      const popovers = Array.from(document.querySelectorAll(".v-popover, .v-popover-content"));
+                      for (const el of popovers) {
+                        if (el.getAttribute("data-ww-hidden") === "1") continue;
+                        const t = (el.innerText || el.textContent || "").trim();
+                        if (t.includes("登录后你可以") || t.includes("立即登录")) rm(el);
+                      }
+                    }
+                    """
+                )
+                await page.wait_for_timeout(300)
             except Exception:
                 pass
             img = await page.screenshot(type="jpeg", quality=80, full_page=True)
