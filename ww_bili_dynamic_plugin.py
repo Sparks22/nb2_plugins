@@ -29,6 +29,7 @@ require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
 
 driver = get_driver()
+_poll_warmup_done = False
 
 
 def _today_ts() -> str:
@@ -342,6 +343,7 @@ async def _send_update(uid: int, uname: str | None, dynamic_id: str, pub_time: s
 @scheduler.scheduled_job("interval", seconds=90, id="ww_bili_dynamic_poll", max_instances=1)
 async def poll_bili_dynamic():
     try:
+        global _poll_warmup_done
         await _ensure_tables()
         targets = await _get_targets()
         logger.info(f"bili 动态轮询开始 targets={len(targets)}")
@@ -354,13 +356,21 @@ async def poll_bili_dynamic():
                 continue
             if uname:
                 await _upsert_target(uid, uname)
-            if last_dynamic_id != dynamic_id:
+            if (not last_dynamic_id) and (not _poll_warmup_done):
+                pub_time = _format_ts(pub_ts) or "未知时间"
+                logger.info(f"bili 动态热启动记录 uid={uid} dynamic_id={dynamic_id} pub={pub_time}")
+                await _set_last_dynamic(uid, dynamic_id)
+                continue
+            if (last_dynamic_id != dynamic_id) and _poll_warmup_done:
                 pub_time = _format_ts(pub_ts) or "未知时间"
                 logger.info(f"bili 动态更新 uid={uid} {last_dynamic_id} -> {dynamic_id} pub={pub_time}")
                 await _set_last_dynamic(uid, dynamic_id)
                 await _send_update(uid, uname, dynamic_id, pub_time)
             else:
                 logger.info(f"bili 动态无更新 uid={uid} dynamic_id={dynamic_id}")
+        if not _poll_warmup_done:
+            _poll_warmup_done = True
+            logger.info("bili 动态热启动完成：后续将正常推送新动态")
     except Exception as e:
         logger.info(f"bili 动态轮询失败 err={e}")
 
