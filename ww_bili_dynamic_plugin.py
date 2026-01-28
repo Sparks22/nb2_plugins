@@ -152,6 +152,25 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
             logger.info(f"bili 动态截图跳转 dynamic_id={dynamic_id} status={(resp.status if resp else None)} url={page.url}")
             await page.wait_for_load_state("networkidle", timeout=60000)
             await page.wait_for_function("document.body && document.body.innerText && document.body.innerText.length > 80", timeout=60000)
+            for sel in (
+                'header a:has-text("登录")',
+                'a:has-text("登录")',
+                '[class*="login"] a',
+                '[href*="passport"]',
+            ):
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.is_visible():
+                        await loc.hover(timeout=1500)
+                        break
+                except Exception:
+                    pass
+            try:
+                vp = page.viewport_size or {"width": 1365, "height": 900}
+                await page.mouse.move(int(vp["width"] * 0.2), int(vp["height"] * 0.9))
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
             img = await page.screenshot(type="jpeg", quality=80, full_page=True)
             await context.close()
             await browser.close()
