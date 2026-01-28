@@ -133,17 +133,27 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
     except Exception:
         return None
 
-    url = f"https://t.bilibili.com/{dynamic_id}"
+    url = f"https://www.bilibili.com/opus/{dynamic_id}"
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page(
+            cookie = getattr(driver.config, "ww_bili_cookie", None)
+            extra_headers = {"Accept-Language": "zh-CN,zh;q=0.9"}
+            if cookie:
+                extra_headers["Cookie"] = str(cookie)
+            context = await browser.new_context(
                 viewport={"width": 1365, "height": 900},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                extra_http_headers=extra_headers,
+                locale="zh-CN",
             )
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(2500)
+            page = await context.new_page()
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            logger.info(f"bili 动态截图跳转 dynamic_id={dynamic_id} status={(resp.status if resp else None)} url={page.url}")
+            await page.wait_for_load_state("networkidle", timeout=60000)
+            await page.wait_for_function("document.body && document.body.innerText && document.body.innerText.length > 80", timeout=60000)
             img = await page.screenshot(type="jpeg", quality=80, full_page=True)
+            await context.close()
             await browser.close()
             return img
     except Exception as e:
