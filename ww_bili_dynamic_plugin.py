@@ -88,6 +88,58 @@ def _http_json(url: str, timeout: int = 15) -> dict:
     return json.loads(body.decode("utf-8", errors="ignore"))
 
 
+def _http_get_bytes(url: str, timeout: int = 15) -> tuple[int, str, bytes]:
+    cookie = getattr(driver.config, "ww_bili_cookie", None)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Referer": "https://www.bilibili.com/",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            **({"Cookie": str(cookie)} if cookie else {}),
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        status = int(getattr(resp, "status", 200))
+        content_type = resp.headers.get("Content-Type", "") or ""
+        content = resp.read()
+    return status, content_type, content
+
+
+def _extract_share_image_url(html: str) -> str | None:
+    patterns = [
+        r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']',
+        r'<meta\s+name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html, flags=re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+async def _fallback_fetch_share_image(dynamic_id: str) -> bytes | None:
+    url = f"https://t.bilibili.com/{dynamic_id}"
+    try:
+        status, _, content = await asyncio.to_thread(_http_get_bytes, url, 15)
+        if status != 200:
+            return None
+        html = content.decode("utf-8", errors="ignore")
+        image_url = _extract_share_image_url(html)
+        if not image_url:
+            return None
+        status2, content_type2, content2 = await asyncio.to_thread(_http_get_bytes, image_url, 15)
+        if status2 != 200:
+            return None
+        if "image" not in content_type2.lower():
+            return None
+        return content2
+    except Exception as e:
+        logger.info(f"bili 分享卡片图获取失败 dynamic_id={dynamic_id} err={e}")
+        return None
+
+
 def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, int | None]:
     try:
         url = f"https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/space_history?host_uid={uid}&offset_dynamic_id=0"
@@ -131,7 +183,7 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
     try:
         from playwright.async_api import async_playwright
     except Exception:
-        return None
+        return await _fallback_fetch_share_image(dynamic_id)
 
     url = f"https://m.bilibili.com/dynamic/{dynamic_id}"
     try:
@@ -150,8 +202,10 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
         err = str(e)
         if "Executable doesn't exist" in err:
             logger.info(f"bili 动态截图失败：缺少浏览器内核，请运行 playwright install chromium")
+        if "libnspr4.so" in err:
+            logger.info("bili 动态截图失败：系统缺少 libnspr4.so（Linux 依赖），建议安装系统依赖或使用分享卡片图降级")
         logger.info(f"bili 动态截图失败 dynamic_id={dynamic_id} err={e}")
-        return None
+        return await _fallback_fetch_share_image(dynamic_id)
 
 
 async def _ensure_tables():
@@ -203,14 +257,8 @@ async def _get_targets() -> list[dict]:
     return await db.fetch_all("SELECT uid, uname, last_dynamic_id FROM ww_bili_target ORDER BY uid ASC")
 
 
-async def _find_targets_by_uname(uname: str) -> list[dict]:
-    rows = await db.fetch_all("SELECT uid, uname FROM ww_bili_target WHERE uname = ? ORDER BY uid ASC", (uname,))
-    if rows:
-        return rows
-    return await db.fetch_all(
-        "SELECT uid, uname FROM ww_bili_target WHERE uname LIKE ? ORDER BY uid ASC",
-        (f"%{uname}%",),
-    )
+async def _get_target_by_uid(uid: int) -> dict | None:
+    return await db.fetch_one("SELECT uid, uname FROM ww_bili_target WHERE uid = ?", (uid,))
 
 
 async def _get_subs_by_uid(uid: int) -> list[dict]:
@@ -260,7 +308,7 @@ async def _rule_del(event: MessageEvent) -> bool:
 
 async def _rule_fetch_latest(event: MessageEvent) -> bool:
     text = event.get_plaintext().strip()
-    return bool(re.match(r"^ww查看\+.+\+最新$", text))
+    return bool(re.match(r"^wwzxdt\+\d{1,20}$", text))
 
 
 ww_add_target = on_message(rule=_rule_add, priority=10, block=True)
@@ -329,36 +377,30 @@ async def handle_del(bot: Bot, event: MessageEvent):
 @ww_fetch_latest.handle()
 async def handle_fetch_latest(bot: Bot, event: MessageEvent):
     text = event.get_plaintext().strip()
-    m = re.match(r"^ww查看\+(.+)\+最新$", text)
+    m = re.match(r"^wwzxdt\+(\d{1,20})$", text)
     if not m:
-        await ww_fetch_latest.finish("用法：ww查看+用户名+最新")
+        await ww_fetch_latest.finish("用法：wwzxdt+UID")
         return
-    uname = m.group(1).strip()
-    if not uname:
-        await ww_fetch_latest.finish("用法：ww查看+用户名+最新")
-        return
-
-    targets = await _find_targets_by_uname(uname)
-    if not targets:
-        await ww_fetch_latest.finish(f"未添加此目标：{uname}")
+    try:
+        uid = int(m.group(1))
+    except Exception:
+        await ww_fetch_latest.finish("用法：wwzxdt+UID")
         return
 
-    chosen = targets[0]
-    if len(targets) > 1:
-        lines = [f"{t.get('uid')} - {t.get('uname') or '未知'}" for t in targets[:10]]
-        msg = "匹配到多个目标，默认使用第一条：\n" + "\n".join(lines)
-        await bot.send(event, msg)
+    target = await _get_target_by_uid(uid)
+    if not target:
+        await ww_fetch_latest.finish(f"未添加此目标：{uid}")
+        return
 
-    uid = int(chosen["uid"])
     dynamic_id, latest_uname, pub_ts = await asyncio.to_thread(_get_latest_dynamic, uid)
     if not dynamic_id:
-        await ww_fetch_latest.finish(f"获取失败：{chosen.get('uname') or uname}（{uid}）暂无动态或接口不可用")
+        await ww_fetch_latest.finish(f"获取失败：{target.get('uname') or uid}（{uid}）暂无动态或接口不可用")
         return
 
     pub_time = _format_ts(pub_ts) or "未知时间"
     img = await _screenshot_dynamic(dynamic_id)
     link = f"https://t.bilibili.com/{dynamic_id}"
-    title = f"哔哩哔哩最新动态：{latest_uname or chosen.get('uname') or uid}\n🕒 {pub_time}\n{link}"
+    title = f"哔哩哔哩最新动态：{latest_uname or target.get('uname') or uid}\n🕒 {pub_time}\n{link}"
 
     if img:
         await ww_fetch_latest.finish(MessageSegment.at(event.user_id) + MessageSegment.image(img) + "\n" + title)
