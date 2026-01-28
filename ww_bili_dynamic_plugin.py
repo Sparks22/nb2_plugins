@@ -35,6 +35,15 @@ def _today_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _format_ts(ts: int | None) -> str | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
 def _extract_uids(text: str) -> list[int]:
     if not text:
         return []
@@ -78,7 +87,7 @@ def _http_json(url: str, timeout: int = 15) -> dict:
     return json.loads(body.decode("utf-8", errors="ignore"))
 
 
-def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, str | None]:
+def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, int | None]:
     try:
         url = f"https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/space_history?host_uid={uid}&offset_dynamic_id=0"
         data = _http_json(url)
@@ -87,9 +96,10 @@ def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, str | None]:
             if cards:
                 desc = cards[0].get("desc") or {}
                 dynamic_id = str(desc.get("dynamic_id_str") or desc.get("dynamic_id") or "").strip()
+                ts = desc.get("timestamp")
                 profile = (desc.get("user_profile") or {}).get("info") or {}
                 uname = profile.get("uname") or None
-                return dynamic_id or None, uname, None
+                return dynamic_id or None, uname, int(ts) if ts is not None else None
     except Exception:
         pass
 
@@ -106,10 +116,12 @@ def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, str | None]:
             str(((first.get("id_str") or first.get("id")) or "")).strip()
             or str((((first.get("basic") or {}).get("comment_id_str")) or "")).strip()
         )
+        modules = first.get("modules") or {}
+        author = (modules.get("module_author")) or {}
+        pub_ts = author.get("pub_ts")
         author = (((first.get("modules") or {}).get("module_author")) or {})
         uname = author.get("name") or None
-        jump_url = author.get("jump_url") or None
-        return dynamic_id or None, uname, jump_url
+        return dynamic_id or None, uname, int(pub_ts) if pub_ts is not None else None
     except Exception:
         return None, None, None
 
@@ -134,6 +146,9 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
             await browser.close()
             return img
     except Exception as e:
+        err = str(e)
+        if "Executable doesn't exist" in err:
+            logger.info(f"bili 动态截图失败：缺少浏览器内核，请运行 playwright install chromium")
         logger.info(f"bili 动态截图失败 dynamic_id={dynamic_id} err={e}")
         return None
 
@@ -201,6 +216,12 @@ async def _add_sub(uid: int, target_type: str, target_id: int, added_by: int | N
     )
 
 
+async def _delete_target(uid: int):
+    await db.execute_update("DELETE FROM ww_bili_sub WHERE uid = ?", (uid,))
+    await db.execute_update("DELETE FROM ww_bili_target WHERE uid = ?", (uid,))
+
+
+
 def _event_target(event: MessageEvent) -> tuple[str, int] | None:
     group_id = getattr(event, "group_id", None)
     if group_id is not None:
@@ -221,8 +242,14 @@ async def _rule_list(event: MessageEvent) -> bool:
     return text == "ww查看目标"
 
 
+async def _rule_del(event: MessageEvent) -> bool:
+    text = event.get_plaintext().strip()
+    return text.startswith("ww删除目标")
+
+
 ww_add_target = on_message(rule=_rule_add, priority=10, block=True)
 ww_list_target = on_message(rule=_rule_list, priority=10, block=True)
+ww_del_target = on_message(rule=_rule_del, priority=10, block=True)
 
 
 @ww_add_target.handle()
@@ -266,7 +293,23 @@ async def handle_list(bot: Bot, event: MessageEvent):
     await ww_list_target.finish("正在侦测的目标：\n" + "\n".join(lines))
 
 
-async def _send_update(uid: int, uname: str | None, dynamic_id: str):
+@ww_del_target.handle()
+async def handle_del(bot: Bot, event: MessageEvent):
+    raw = event.get_plaintext().strip()
+    raw = raw.replace("ww删除目标", "", 1).strip()
+    uids = _extract_uids(raw)
+    if not uids:
+        await ww_del_target.finish("用法：ww删除目标+哔哩哔哩UID（多个用英文逗号分隔）")
+        return
+
+    removed = 0
+    for uid in uids:
+        await _delete_target(uid)
+        removed += 1
+    await ww_del_target.finish(f"已删除 {removed} 个目标")
+
+
+async def _send_update(uid: int, uname: str | None, dynamic_id: str, pub_time: str | None):
     bots = get_bots()
     if not bots:
         return
@@ -274,7 +317,8 @@ async def _send_update(uid: int, uname: str | None, dynamic_id: str):
 
     img = await _screenshot_dynamic(dynamic_id)
     link = f"https://t.bilibili.com/{dynamic_id}"
-    title = f"哔哩哔哩新动态：{uname or uid}\n{link}"
+    pub_line = f"🕒 {pub_time}\n" if pub_time else ""
+    title = f"哔哩哔哩新动态：{uname or uid}\n{pub_line}{link}"
 
     subs = await _get_subs_by_uid(uid)
     for s in subs:
@@ -300,17 +344,23 @@ async def poll_bili_dynamic():
     try:
         await _ensure_tables()
         targets = await _get_targets()
+        logger.info(f"bili 动态轮询开始 targets={len(targets)}")
         for t in targets:
             uid = int(t["uid"])
             last_dynamic_id = t.get("last_dynamic_id")
-            dynamic_id, uname, _ = await asyncio.to_thread(_get_latest_dynamic, uid)
+            dynamic_id, uname, pub_ts = await asyncio.to_thread(_get_latest_dynamic, uid)
             if not dynamic_id:
+                logger.info(f"bili 动态轮询 uid={uid} 获取失败")
                 continue
             if uname:
                 await _upsert_target(uid, uname)
             if last_dynamic_id != dynamic_id:
+                pub_time = _format_ts(pub_ts) or "未知时间"
+                logger.info(f"bili 动态更新 uid={uid} {last_dynamic_id} -> {dynamic_id} pub={pub_time}")
                 await _set_last_dynamic(uid, dynamic_id)
-                await _send_update(uid, uname, dynamic_id)
+                await _send_update(uid, uname, dynamic_id, pub_time)
+            else:
+                logger.info(f"bili 动态无更新 uid={uid} dynamic_id={dynamic_id}")
     except Exception as e:
         logger.info(f"bili 动态轮询失败 err={e}")
 
