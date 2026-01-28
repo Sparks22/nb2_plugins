@@ -88,58 +88,6 @@ def _http_json(url: str, timeout: int = 15) -> dict:
     return json.loads(body.decode("utf-8", errors="ignore"))
 
 
-def _http_get_bytes(url: str, timeout: int = 15) -> tuple[int, str, bytes]:
-    cookie = getattr(driver.config, "ww_bili_cookie", None)
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Referer": "https://www.bilibili.com/",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            **({"Cookie": str(cookie)} if cookie else {}),
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        status = int(getattr(resp, "status", 200))
-        content_type = resp.headers.get("Content-Type", "") or ""
-        content = resp.read()
-    return status, content_type, content
-
-
-def _extract_share_image_url(html: str) -> str | None:
-    patterns = [
-        r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']',
-        r'<meta\s+name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']',
-    ]
-    for pat in patterns:
-        m = re.search(pat, html, flags=re.IGNORECASE)
-        if m:
-            return m.group(1).strip()
-    return None
-
-
-async def _fallback_fetch_share_image(dynamic_id: str) -> bytes | None:
-    url = f"https://t.bilibili.com/{dynamic_id}"
-    try:
-        status, _, content = await asyncio.to_thread(_http_get_bytes, url, 15)
-        if status != 200:
-            return None
-        html = content.decode("utf-8", errors="ignore")
-        image_url = _extract_share_image_url(html)
-        if not image_url:
-            return None
-        status2, content_type2, content2 = await asyncio.to_thread(_http_get_bytes, image_url, 15)
-        if status2 != 200:
-            return None
-        if "image" not in content_type2.lower():
-            return None
-        return content2
-    except Exception as e:
-        logger.info(f"bili 分享卡片图获取失败 dynamic_id={dynamic_id} err={e}")
-        return None
-
-
 def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, int | None]:
     try:
         url = f"https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/space_history?host_uid={uid}&offset_dynamic_id=0"
@@ -183,18 +131,18 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
     try:
         from playwright.async_api import async_playwright
     except Exception:
-        return await _fallback_fetch_share_image(dynamic_id)
+        return None
 
-    url = f"https://m.bilibili.com/dynamic/{dynamic_id}"
+    url = f"https://t.bilibili.com/{dynamic_id}"
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page(
-                viewport={"width": 430, "height": 932},
-                user_agent="Mozilla/5.0 (Linux; Android 12; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+                viewport={"width": 1365, "height": 900},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             )
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            await page.wait_for_timeout(1500)
+            await page.wait_for_timeout(2500)
             img = await page.screenshot(type="jpeg", quality=80, full_page=True)
             await browser.close()
             return img
@@ -205,7 +153,7 @@ async def _screenshot_dynamic(dynamic_id: str) -> bytes | None:
         if "libnspr4.so" in err:
             logger.info("bili 动态截图失败：系统缺少 libnspr4.so（Linux 依赖），建议安装系统依赖或使用分享卡片图降级")
         logger.info(f"bili 动态截图失败 dynamic_id={dynamic_id} err={e}")
-        return await _fallback_fetch_share_image(dynamic_id)
+        return None
 
 
 async def _ensure_tables():
