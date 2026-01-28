@@ -95,10 +95,31 @@ def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, int | None]:
         if data.get("code") == 0:
             cards = (data.get("data") or {}).get("cards") or []
             if cards:
-                desc = cards[0].get("desc") or {}
+                def pick(cards_: list[dict]) -> dict:
+                    def is_top(card_: dict) -> bool:
+                        desc_ = card_.get("desc") or {}
+                        v = desc_.get("is_top")
+                        if v is None:
+                            v = desc_.get("isTop")
+                        return str(v) == "1" or v is True
+
+                    def ts(card_: dict) -> int:
+                        desc_ = card_.get("desc") or {}
+                        v = desc_.get("timestamp")
+                        try:
+                            return int(v)
+                        except Exception:
+                            return 0
+
+                    non_top = [c for c in cards_ if not is_top(c)]
+                    cand = non_top if non_top else cards_
+                    return max(cand, key=ts)
+
+                card = pick(cards)
+                desc = card.get("desc") or {}
                 dynamic_id = str(desc.get("dynamic_id_str") or desc.get("dynamic_id") or "").strip()
                 ts = desc.get("timestamp")
-                profile = (desc.get("user_profile") or {}).get("info") or {}
+                profile = ((desc.get("user_profile") or {}).get("info")) or {}
                 uname = profile.get("uname") or None
                 return dynamic_id or None, uname, int(ts) if ts is not None else None
     except Exception:
@@ -112,15 +133,42 @@ def _get_latest_dynamic(uid: int) -> tuple[str | None, str | None, int | None]:
         items = (data.get("data") or {}).get("items") or []
         if not items:
             return None, None, None
-        first = items[0]
-        dynamic_id = (
-            str(((first.get("id_str") or first.get("id")) or "")).strip()
-            or str((((first.get("basic") or {}).get("comment_id_str")) or "")).strip()
-        )
-        modules = first.get("modules") or {}
+        def item_id(it: dict) -> str:
+            return (
+                str(((it.get("id_str") or it.get("id")) or "")).strip()
+                or str((((it.get("basic") or {}).get("comment_id_str")) or "")).strip()
+            )
+
+        def item_ts(it: dict) -> int:
+            modules = it.get("modules") or {}
+            author = (modules.get("module_author")) or {}
+            v = author.get("pub_ts")
+            try:
+                return int(v)
+            except Exception:
+                return 0
+
+        def item_is_top(it: dict) -> bool:
+            basic = it.get("basic") or {}
+            v = basic.get("is_top")
+            if v is None:
+                v = basic.get("isTop")
+            modules = it.get("modules") or {}
+            author = (modules.get("module_author")) or {}
+            v2 = author.get("is_top")
+            if v2 is None:
+                v2 = author.get("isTop")
+            v = v if v is not None else v2
+            return str(v) == "1" or v is True
+
+        non_top = [it for it in items if not item_is_top(it)]
+        cand = non_top if non_top else items
+        chosen = max(cand, key=item_ts)
+
+        dynamic_id = item_id(chosen)
+        modules = chosen.get("modules") or {}
         author = (modules.get("module_author")) or {}
         pub_ts = author.get("pub_ts")
-        author = (((first.get("modules") or {}).get("module_author")) or {})
         uname = author.get("name") or None
         return dynamic_id or None, uname, int(pub_ts) if pub_ts is not None else None
     except Exception:
