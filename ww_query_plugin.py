@@ -68,7 +68,7 @@ async def init_tables():
         )
     """)
 
-ww_query_plugin = on_command("ww查看", priority=10, block=True)
+ww_query_plugin = on_command("ww查看", priority=10, block=True, force_whitespace=True)
 
 @ww_query_plugin.handle()
 async def handle_request(bot: Bot, event: MessageEvent, state: T_State):
