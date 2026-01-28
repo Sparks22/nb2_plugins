@@ -203,6 +203,16 @@ async def _get_targets() -> list[dict]:
     return await db.fetch_all("SELECT uid, uname, last_dynamic_id FROM ww_bili_target ORDER BY uid ASC")
 
 
+async def _find_targets_by_uname(uname: str) -> list[dict]:
+    rows = await db.fetch_all("SELECT uid, uname FROM ww_bili_target WHERE uname = ? ORDER BY uid ASC", (uname,))
+    if rows:
+        return rows
+    return await db.fetch_all(
+        "SELECT uid, uname FROM ww_bili_target WHERE uname LIKE ? ORDER BY uid ASC",
+        (f"%{uname}%",),
+    )
+
+
 async def _get_subs_by_uid(uid: int) -> list[dict]:
     return await db.fetch_all(
         "SELECT target_type, target_id FROM ww_bili_sub WHERE uid = ?",
@@ -248,9 +258,15 @@ async def _rule_del(event: MessageEvent) -> bool:
     return text.startswith("ww删除目标")
 
 
+async def _rule_fetch_latest(event: MessageEvent) -> bool:
+    text = event.get_plaintext().strip()
+    return bool(re.match(r"^ww查看\+.+\+最新$", text))
+
+
 ww_add_target = on_message(rule=_rule_add, priority=10, block=True)
 ww_list_target = on_message(rule=_rule_list, priority=10, block=True)
 ww_del_target = on_message(rule=_rule_del, priority=10, block=True)
+ww_fetch_latest = on_message(rule=_rule_fetch_latest, priority=10, block=True)
 
 
 @ww_add_target.handle()
@@ -308,6 +324,46 @@ async def handle_del(bot: Bot, event: MessageEvent):
         await _delete_target(uid)
         removed += 1
     await ww_del_target.finish(f"已删除 {removed} 个目标")
+
+
+@ww_fetch_latest.handle()
+async def handle_fetch_latest(bot: Bot, event: MessageEvent):
+    text = event.get_plaintext().strip()
+    m = re.match(r"^ww查看\+(.+)\+最新$", text)
+    if not m:
+        await ww_fetch_latest.finish("用法：ww查看+用户名+最新")
+        return
+    uname = m.group(1).strip()
+    if not uname:
+        await ww_fetch_latest.finish("用法：ww查看+用户名+最新")
+        return
+
+    targets = await _find_targets_by_uname(uname)
+    if not targets:
+        await ww_fetch_latest.finish(f"未添加此目标：{uname}")
+        return
+
+    chosen = targets[0]
+    if len(targets) > 1:
+        lines = [f"{t.get('uid')} - {t.get('uname') or '未知'}" for t in targets[:10]]
+        msg = "匹配到多个目标，默认使用第一条：\n" + "\n".join(lines)
+        await bot.send(event, msg)
+
+    uid = int(chosen["uid"])
+    dynamic_id, latest_uname, pub_ts = await asyncio.to_thread(_get_latest_dynamic, uid)
+    if not dynamic_id:
+        await ww_fetch_latest.finish(f"获取失败：{chosen.get('uname') or uname}（{uid}）暂无动态或接口不可用")
+        return
+
+    pub_time = _format_ts(pub_ts) or "未知时间"
+    img = await _screenshot_dynamic(dynamic_id)
+    link = f"https://t.bilibili.com/{dynamic_id}"
+    title = f"哔哩哔哩最新动态：{latest_uname or chosen.get('uname') or uid}\n🕒 {pub_time}\n{link}"
+
+    if img:
+        await ww_fetch_latest.finish(MessageSegment.at(event.user_id) + MessageSegment.image(img) + "\n" + title)
+    else:
+        await ww_fetch_latest.finish(MessageSegment.at(event.user_id) + "\n" + title)
 
 
 async def _send_update(uid: int, uname: str | None, dynamic_id: str, pub_time: str | None):
