@@ -30,6 +30,7 @@ from nonebot_plugin_apscheduler import scheduler
 
 driver = get_driver()
 _poll_warmup_done = False
+_pending_send_tasks: dict[tuple[str, int, str], asyncio.Task] = {}
 
 
 def _today_ts() -> str:
@@ -43,6 +44,104 @@ def _format_ts(ts: int | None) -> str | None:
         return datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
     except Exception:
         return None
+
+
+def _is_probably_image_bytes(data: bytes) -> bool:
+    if not data:
+        return False
+    if len(data) < 256:
+        return False
+    if data.startswith(b"\xff\xd8"):
+        return True
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return True
+    if data.startswith(b"RIFF") and b"WEBP" in data[8:16]:
+        return True
+    return False
+
+
+def _retry_settings() -> tuple[bool, int, float, float]:
+    retry_forever = bool(getattr(driver.config, "ww_bili_retry_forever", False))
+    attempts = int(getattr(driver.config, "ww_bili_retry_attempts", 10))
+    delay = float(getattr(driver.config, "ww_bili_retry_delay", 2.0))
+    max_delay = float(getattr(driver.config, "ww_bili_retry_max_delay", 30.0))
+    if attempts < 1:
+        attempts = 1
+    if delay < 0.2:
+        delay = 0.2
+    if max_delay < delay:
+        max_delay = delay
+    return retry_forever, attempts, delay, max_delay
+
+
+async def _sleep_backoff(attempt: int):
+    _, _, delay, max_delay = _retry_settings()
+    wait_s = min(max_delay, delay * (1.6 ** max(0, attempt - 1)))
+    await asyncio.sleep(wait_s)
+
+
+async def _capture_screenshot_retry(dynamic_id: str) -> bytes | None:
+    retry_forever, attempts, _, _ = _retry_settings()
+    attempt = 1
+    while True:
+        img = await _screenshot_dynamic(dynamic_id)
+        if isinstance(img, (bytes, bytearray)) and _is_probably_image_bytes(bytes(img)):
+            return bytes(img)
+        logger.info(f"bili 截图失败或无效 dynamic_id={dynamic_id} attempt={attempt}")
+        if (not retry_forever) and attempt >= attempts:
+            return None
+        attempt += 1
+        await _sleep_backoff(attempt)
+
+
+async def _send_with_retry_target(bot: Any, target_type: str, target_id: int, message_builder):
+    retry_forever, attempts, _, _ = _retry_settings()
+    attempt = 1
+    while True:
+        try:
+            msg = message_builder()
+            if target_type == "group":
+                await bot.send_group_msg(group_id=int(target_id), message=msg)
+            else:
+                await bot.send_private_msg(user_id=int(target_id), message=msg)
+            return
+        except Exception as e:
+            logger.info(f"bili 消息发送失败 target={target_type}:{target_id} attempt={attempt} err={e}")
+            if (not retry_forever) and attempt >= attempts:
+                return
+            attempt += 1
+            await _sleep_backoff(attempt)
+
+
+async def _capture_and_send_target(
+    bot: Any,
+    target_type: str,
+    target_id: int,
+    dynamic_id: str,
+    title: str,
+):
+    retry_forever, attempts, _, _ = _retry_settings()
+    attempt = 1
+    while True:
+        img = await _capture_screenshot_retry(dynamic_id)
+        if not img:
+            await _send_with_retry_target(bot, target_type, target_id, lambda: title)
+            return
+        try:
+            if target_type == "group":
+                await bot.send_group_msg(group_id=int(target_id), message=MessageSegment.image(img) + "\n" + title)
+            else:
+                await bot.send_private_msg(user_id=int(target_id), message=MessageSegment.image(img) + "\n" + title)
+            return
+        except Exception as e:
+            logger.info(f"bili 截图发送失败 target={target_type}:{target_id} dynamic_id={dynamic_id} attempt={attempt} err={e}")
+            if (not retry_forever) and attempt >= attempts:
+                await _send_with_retry_target(bot, target_type, target_id, lambda: title)
+                return
+            attempt += 1
+            await _sleep_backoff(attempt)
 
 
 def _extract_uids(text: str) -> list[int]:
@@ -441,12 +540,22 @@ async def handle_fetch_latest(bot: Bot, event: MessageEvent):
         return
 
     pub_time = _format_ts(pub_ts) or "未知时间"
-    img = await _screenshot_dynamic(dynamic_id)
+    img = await _capture_screenshot_retry(dynamic_id)
     link = f"https://t.bilibili.com/{dynamic_id}"
     title = f"哔哩哔哩最新动态：{latest_uname or target.get('uname') or uid}\n🕒 {pub_time}\n{link}"
 
     if img:
-        await ww_fetch_latest.finish(MessageSegment.at(event.user_id) + MessageSegment.image(img) + "\n" + title)
+        try:
+            await ww_fetch_latest.finish(MessageSegment.at(event.user_id) + MessageSegment.image(img) + "\n" + title)
+        except Exception as e:
+            logger.info(f"bili wwzxdt 图片发送失败，将后台重试 uid={uid} dynamic_id={dynamic_id} err={e}")
+            # try:
+            #     # await ww_fetch_latest.finish("截图发送失败，正在重试，成功后补发")
+            # except Exception:
+            #     pass
+            async def _task():
+                await _capture_and_send_target(bot, "private", int(event.user_id), dynamic_id, title)
+            asyncio.create_task(_task())
     else:
         await ww_fetch_latest.finish(MessageSegment.at(event.user_id) + "\n" + title)
 
@@ -457,7 +566,6 @@ async def _send_update(uid: int, uname: str | None, dynamic_id: str, pub_time: s
         return
     bot: Any = next(iter(bots.values()))
 
-    img = await _screenshot_dynamic(dynamic_id)
     link = f"https://t.bilibili.com/{dynamic_id}"
     pub_line = f"🕒 {pub_time}\n" if pub_time else ""
     title = f"哔哩哔哩新动态：{uname or uid}\n{pub_line}{link}"
@@ -467,18 +575,14 @@ async def _send_update(uid: int, uname: str | None, dynamic_id: str, pub_time: s
         target_type = s.get("target_type")
         target_id = s.get("target_id")
         try:
-            if target_type == "group":
-                if img:
-                    await bot.send_group_msg(group_id=int(target_id), message=MessageSegment.image(img) + "\n" + title)
-                else:
-                    await bot.send_group_msg(group_id=int(target_id), message=title)
-            else:
-                if img:
-                    await bot.send_private_msg(user_id=int(target_id), message=MessageSegment.image(img) + "\n" + title)
-                else:
-                    await bot.send_private_msg(user_id=int(target_id), message=title)
+            key = (str(target_type), int(target_id), str(dynamic_id))
+            if key in _pending_send_tasks and not _pending_send_tasks[key].done():
+                continue
+            task = asyncio.create_task(_capture_and_send_target(bot, str(target_type), int(target_id), str(dynamic_id), title))
+            _pending_send_tasks[key] = task
+            task.add_done_callback(lambda _t, _k=key: _pending_send_tasks.pop(_k, None))
         except Exception as e:
-            logger.info(f"bili 动态推送失败 uid={uid} target={target_type}:{target_id} err={e}")
+            logger.info(f"bili 动态推送任务创建失败 uid={uid} target={target_type}:{target_id} err={e}")
 
 
 @scheduler.scheduled_job("interval", seconds=90, id="ww_bili_dynamic_poll", max_instances=1)
